@@ -78,17 +78,3 @@ python train.py --seeds SEED_1 SEED_2 SEED_3 SEED_4 SEED_5 --gpus 0 1 2 3 4
 | `--threads` | `4` | CPU threads per task |
 
 `--seed` and `--seeds` are mutually exclusive.
-
-### Configuration
-
-Model and training settings can be adjusted in `configs/fingermovements.json`:
-
-- `data.batch_size`: training batch size.
-- `model.patch_len` and `model.stride`: patch length and stride.
-- `model.d_model`, `model.n_heads`, and `model.n_layers`: temporal encoder dimensions.
-- `model.codebook_size`: codebook size K.
-- `model.num_quantize_layers`: quantization depth L.
-- `model.gpt2_model`: pretrained GPT-2 directory.
-- `training.stage1_epochs` and `training.stage3_epochs`: training epoch limits.
-- `training.stage3_lr`: GPT-2 learning rate.
-- `training.loss_weight_label`: classification loss weight.
