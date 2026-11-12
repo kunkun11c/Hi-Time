@@ -2,20 +2,34 @@
 
 ## Overview
 
-This repository contains the implementation of *Hi-Time: Hierarchical Latent Prediction for Multivariate Time Series Classification*.
+This repository contains the implementation code for *Hi-Time: Hierarchical Latent Prediction for Multivariate Time Series Classification*.
 
-Hi-Time constructs coarse-to-fine prediction trajectories using temporal semantic codes. It first pre-trains a temporal encoder with multi-view fusion across scales, variables, and temporal patches. Residual K-Means then discretizes the learned representations into hierarchical semantic codes. Finally, GPT-2 takes projected time-series inputs and predicts these codes step by step before inferring the class label.
+Integrating Large Language Models (LLMs) into time series tasks has yielded impressive performance. While some works aim to enhance accuracy by explicitly designing step-by-step reasoning into prompts, such explicit Chain-of-Thought (CoT) approaches are difficult to generalize to time series. This is because it is difficult to clearly define the reasoning trajectories of time series. In addition, the high heterogeneity across time series often requires specialized prompt designs, limiting the model's scalability.To address these challenges, we propose **Hi-Time**, a **hi**erarchical latent prediction framework based on temporal semantic codes for multivariate **time** series classification. This framework automatically constructs scenario-specific coarse-to-fine prediction trajectories based on the characteristics of time series, thereby providing structured supervision for the LLM.Specifically, Hi-Time first performs temporal representation pre-training with a multi-view temporal representation fusion to acquire high-quality temporal embeddings. We then discretize these temporal embeddings into hierarchical temporal semantic codes that form the coarse-to-fine prediction trajectory. Finally, the LLM predicts temporal semantic codes in a stepwise manner and then infers the final label, thereby establishing a coarse-to-fine decision process.Experiments on ten public multivariate time series datasets demonstrate that Hi-Time effectively adapts to diverse datasets and outperforms state-of-the-art methods.
 
 ## The Model Framework of Hi-Time
 
-![Hi-Time architecture](model.png)
+![model](model_new.png)
 
 ## Datasets
 
-This release includes FingerMovements from the [UEA multivariate time series archive](https://www.timeseriesclassification.com/dataset.php). The data is provided in the following format:
+We follow the benchmark on [TS-GAC](https://github.com/Frank-Wang-oss/TS-GAC) and use 10 datasets: UCI-HAR, ISRUC-S3, and 8 UEA datasets including ArticularyWordRecognition (AWR), FingerMovements (FM), SpokenArabicDigits (SAD), CharacterTrajectories (CT), FaceDetection (FD), InsectWingbeat (IW), MotorImagery (MI), and SelfRegulationSCP1 (SRSCP1).
 
-```text
-data/datasets/FingerMovements/
+### UCI-HAR
+
+You can access [here](https://archive.ics.uci.edu/ml/datasets/Human+Activity+Recognition+Using+Smartphones).
+
+### ISRUC-S3
+
+You can access [here](https://sleeptight.isr.uc.pt/), and download S3.
+
+### UEA Datasets
+
+You can access [here](http://timeseriesclassification.com/dataset.php).
+
+This repository includes the FingerMovements dataset as a demo example. To use other datasets, download the corresponding `.npy` files and place them under `data/datasets/<DatasetName>/`:
+
+```
+data/datasets/<DatasetName>/
 ├── X_train.npy
 ├── y_train.npy
 ├── X_test.npy
