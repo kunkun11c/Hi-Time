@@ -1,46 +1,57 @@
 # Hi-Time: Hierarchical Latent Prediction for Multivariate Time Series Classification
 
-Hi-Time learns temporal representations, quantizes them into coarse-to-fine semantic codes, and trains GPT-2 to predict those codes before classifying a time series. See [implementation details](docs/implementation.md).
+Hi-Time first learns temporal representations, then generates hierarchical semantic codes with residual K-Means, and finally trains GPT-2 to predict the codes and class label.
 
 ![Hi-Time architecture](model.png)
 
 ## Installation
 
-The setup script requires [uv](https://docs.astral.sh/uv/) and creates a Python 3.9 environment with PyTorch 2.0.0 and CUDA 11.8. Dependencies are pinned in [requirements-paper-lock.txt](requirements-paper-lock.txt).
+Use Python 3.9. The requirements pin PyTorch 2.0.0 with CUDA 11.8 and Transformers 4.30.2.
 
 ```bash
-bash scripts/setup_paper_env.sh
+python3.9 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Download [GPT-2 small](https://huggingface.co/openai-community/gpt2) separately and place `config.json` and `model.safetensors` in `pretrained/gpt2/`. Use `scripts/python_paper.sh` to run the installed environment; set `HITIME_PAPER_ENV` if it is stored elsewhere.
+Download [GPT-2 small](https://huggingface.co/openai-community/gpt2) separately and place `config.json` and `model.safetensors` in `pretrained/gpt2/`.
 
-## FingerMovements
+## Training
 
-The bundled [UEA FingerMovements dataset](https://www.timeseriesclassification.com/dataset.php) uses [configs/fingermovements.json](configs/fingermovements.json): K=64, L=3, λ=20, and pretrained GPT-2 with learning rate 1e-5.
+The default configuration is [configs/fingermovements.json](configs/fingermovements.json): K=64, L=3, λ=20, batch size 32, and GPT-2 learning rate 1e-5. The default seeds are 957, 1291, 1491, 1903 and 1498.
 
-Run the five recorded seeds in parallel, one job per GPU:
+Run the five seeds in parallel, one job per GPU, or sequentially on one GPU:
 
 ```bash
-HITIME_GPUS="0 1 2 3 4" bash scripts/reproduce_fingermovements.sh \
-  experiments/results/fm_five_seeds
+python train.py --gpus 0 1 2 3 4
+python train.py --gpus 0
 ```
 
-Use `HITIME_GPUS="0"` to run them sequentially on one GPU. Run a single seed with:
+Run a single seed or choose an output directory:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/python_paper.sh experiments/run_finger.py \
-  --config configs/fingermovements.json --seed 957 \
-  --output experiments/results/fm_seed957 --paper-protocol
+python train.py --seed 957 --gpus 0 --output outputs/single_seed
+python train.py --config configs/fingermovements.json --gpus 0 --output outputs/fingermovements
 ```
 
-Each run saves checkpoints, data splits, normalization statistics, training histories, predictions, and environment records. Replay a saved predictor with:
+By default, each run writes `outputs/seed_<seed>/results.json`, `train.log`, saved predictions and `checkpoints/{encoder,discretizer,predictor}.pt`. The combined scores and mean are written to `outputs/results.json`; `--output` changes this root directory.
 
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/python_paper.sh experiments/evaluate_checkpoint.py \
-  --run-dir experiments/results/fm_seed957
-```
+The bundled FingerMovements data is merged and stratified into 249 training, 83 validation and 84 test examples. Per-variable normalization uses only training samples; each seed controls both splitting and training. Checkpoints are selected by validation accuracy.
 
-The five-seed mean is **64.0476%**; individual scores and settings are in the [experiment notes](docs/fingermovements.md) and [results CSV](results/fingermovements.csv). The configuration and seeds were selected using test accuracy; these results document reproducibility rather than an independent evaluation.
+FFT downsampling steps use `round(max(selected_f) / f)`, and shared-backbone patch features are aligned by adaptive average pooling. GPT-2 receives projected raw time points; subsequent MLPs use embeddings of their own hard-argmax code predictions. FFT scaling, patch alignment and discrete-code handling are implementation choices where the paper leaves details unspecified.
+
+## FingerMovements results
+
+| Seed | Correct / test examples | Accuracy |
+| --- | --- | --- |
+| 957 | 56 / 84 | 66.6667% |
+| 1291 | 54 / 84 | 64.2857% |
+| 1491 | 54 / 84 | 64.2857% |
+| 1903 | 53 / 84 | 63.0952% |
+| 1498 | 52 / 84 | 61.9048% |
+| Mean | 269 / 420 predictions | **64.0476%** |
+
+Machine-readable scores are in [results/fingermovements.csv](results/fingermovements.csv). The configuration and seeds were selected using test accuracy; these results document reproducibility rather than an independent evaluation.
 
 ## References
 
