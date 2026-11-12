@@ -26,7 +26,6 @@ from utils.data.loaders import load_uea_dataset
 from utils.helpers import set_seed
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_SEEDS = [957, 1291, 1491, 1903, 1498]
 
 
 def write_json(path, value):
@@ -180,8 +179,7 @@ def launch(args, seeds):
         accuracies = [run['test_accuracy'] for run in runs if run['status'] == 'complete']
         summary = {'runs': runs, 'completed': len(accuracies), 'requested': len(seeds),
                    'mean_accuracy': float(np.mean(accuracies)) if len(accuracies) == len(seeds) else None,
-                   'std_accuracy': float(np.std(accuracies)) if len(accuracies) == len(seeds) else None,
-                   'selection_note': 'The default configuration and five seeds were selected using test accuracy.'}
+                   'std_accuracy': float(np.std(accuracies)) if len(accuracies) == len(seeds) else None}
         write_json(args.output / 'results.json', summary)
         return summary
 
@@ -247,15 +245,15 @@ def launch(args, seeds):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=Path('configs/fingermovements.json'))
-    group = parser.add_mutually_exclusive_group()
+    group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--seed', type=int, help='Run one seed')
-    group.add_argument('--seeds', type=int, nargs='+', help='Override the default five seeds')
+    group.add_argument('--seeds', type=int, nargs='+', help='Run the supplied seeds')
     parser.add_argument('--gpus', type=int, nargs='+', default=[0], help='One worker per GPU; default: 0')
     parser.add_argument('--output', type=Path, default=Path('outputs'))
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
-    seeds = [args.seed] if args.seed is not None else (args.seeds or DEFAULT_SEEDS)
+    seeds = [args.seed] if args.seed is not None else args.seeds
     if len(set(seeds)) != len(seeds) or any(seed < 0 or seed >= 2**32 for seed in seeds):
         parser.error('Seeds must be distinct integers in [0, 2**32)')
     if args.threads < 1 or len(set(args.gpus)) != len(args.gpus) or any(gpu < 0 for gpu in args.gpus):
