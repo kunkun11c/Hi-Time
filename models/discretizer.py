@@ -15,11 +15,19 @@ class Stage2Discretizer(nn.Module):
         self.num_rq_layers = num_rq_layers
         self.num_classes = num_classes
         self.residual_quantizer = ResidualQuantizer(d_model, codebook_size, num_rq_layers, ema_decay)
+        # Untrained compatibility head; keep construction to preserve RNG draws.
         self.classifier = nn.Sequential(
             nn.Linear(d_model, d_model // 2), nn.GELU(), nn.Dropout(0.1),
             nn.Linear(d_model // 2, num_classes)
         )
-    
+
+    @torch.no_grad()
+    def fit(self, representations: torch.Tensor, max_iter: int = 100,
+            seed: int = 0):
+        """Fit all residual codebooks using training representations only."""
+        self.residual_quantizer.fit(representations, max_iter=max_iter, seed=seed)
+        return self
+
     def forward(self, repr: torch.Tensor) -> Dict[str, torch.Tensor]:
         rq_output = self.residual_quantizer(repr)
         logits = self.classifier(rq_output['quantized'])
@@ -30,7 +38,7 @@ class Stage2Discretizer(nn.Module):
             'code_embeds': rq_output['code_embeds'],
             'logits': logits
         }
-    
+
     def get_loss(self, outputs: Dict, repr: torch.Tensor, labels: torch.Tensor,
                  commitment_weight: float = 0.25) -> tuple:
         cls_loss = F.cross_entropy(outputs['logits'], labels)
@@ -43,6 +51,6 @@ class Stage2Discretizer(nn.Module):
             'commitment_loss': commitment_loss.item(),
             'total_loss': total_loss.item()
         }
-    
+
     def get_code_embeddings(self, codes: List[torch.Tensor]) -> List[torch.Tensor]:
         return self.residual_quantizer.get_code_embeddings(codes)

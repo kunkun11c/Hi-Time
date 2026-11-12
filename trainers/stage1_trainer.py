@@ -39,7 +39,7 @@ class Stage1Trainer(BaseTrainer):
             d_ff=config.model.d_ff,
             dropout=dropout
         ).to(device)
-        # Replace classifier with a deeper version for stronger regularization
+        # Keep replacement after model initialization to preserve seeded draws.
         if config.model.deep_classifier:
             cls_dropout = min(dropout * 2, 0.3)
             self.model.classifier = nn.Sequential(
@@ -62,49 +62,46 @@ class Stage1Trainer(BaseTrainer):
             )
         self.mixup_alpha = config.training.mixup_alpha
         self.label_smoothing = config.training.label_smoothing
-    
+
     def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
         self.model.train()
         total_loss, total_correct, total_samples = 0.0, 0, 0
-        
+
         for x, y in train_loader:
             x, y = x.to(self.device), y.to(self.device)
-            
-            # Apply mixup
+
             mixed_x, y_a, y_b, lam = mixup_data(x, y, self.mixup_alpha)
-            
+
             self.optimizer.zero_grad()
             outputs = self.model(mixed_x)
-            
-            # Mixup loss with label smoothing
+
             loss = lam * F.cross_entropy(outputs['logits'], y_a, label_smoothing=self.label_smoothing) + \
                    (1 - lam) * F.cross_entropy(outputs['logits'], y_b, label_smoothing=self.label_smoothing)
-            
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
-            
+
             total_loss += loss.item() * x.size(0)
-            # For accuracy tracking, use unmixed predictions vs original labels
             total_correct += (outputs['logits'].argmax(dim=-1) == y_a).sum().item()
             total_samples += x.size(0)
-        
+
         return {'loss': total_loss / total_samples, 'accuracy': total_correct / total_samples}
-    
+
     @torch.no_grad()
     def validate(self, val_loader: DataLoader) -> Dict[str, float]:
         self.model.eval()
         total_loss, total_correct, total_samples = 0.0, 0, 0
-        
+
         for x, y in val_loader:
             x, y = x.to(self.device), y.to(self.device)
             outputs = self.model(x)
             loss, _ = self.model.get_loss(outputs, y)
-            
+
             total_loss += loss.item() * x.size(0)
             total_correct += (outputs['logits'].argmax(dim=-1) == y).sum().item()
             total_samples += x.size(0)
-        
+
         return {'loss': total_loss / total_samples, 'accuracy': total_correct / total_samples}
 
 

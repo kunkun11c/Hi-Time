@@ -17,7 +17,7 @@ def normalize_data(data: Union[np.ndarray, torch.Tensor], dim: int = -1) -> Unio
 class Compose:
     def __init__(self, transforms: List[Callable]):
         self.transforms = transforms
-    
+
     def __call__(self, x):
         for t in self.transforms:
             x = t(x)
@@ -27,7 +27,7 @@ class Compose:
 class AddNoise:
     def __init__(self, noise_level: float = 0.1):
         self.noise_level = noise_level
-    
+
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         return x + self.noise_level * torch.randn_like(x)
 
@@ -35,7 +35,7 @@ class AddNoise:
 class RandomScale:
     def __init__(self, scale_range: tuple = (0.9, 1.1)):
         self.scale_range = scale_range
-    
+
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         scale = torch.empty(1).uniform_(*self.scale_range).item()
         return x * scale
@@ -44,6 +44,6 @@ class RandomScale:
 class TimeWarp:
     def __init__(self, sigma: float = 0.2):
         self.sigma = sigma
-    
+
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         return x

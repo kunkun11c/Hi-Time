@@ -2,7 +2,7 @@ from .base_config import Config, DataConfig, ModelConfig, TrainingConfig
 
 
 def get_default_config() -> Config:
-    """Default config matching paper settings."""
+    """Reproduction starting point; the paper does not disclose every setting."""
     return Config(
         model=ModelConfig(
             d_model=128,
@@ -25,13 +25,8 @@ def get_fast_debug_config() -> Config:
     )
 
 
-# =====================================================================
-# Per-dataset optimal presets (L and K selected via grid search on val)
-# Paper: L in {1,2,3}, K in {16,32,64,128,256}
-# =====================================================================
-
 def _paper_config(codebook_size: int, num_quantize_layers: int, batch_size: int = 32) -> Config:
-    """Base config for paper experiments with given K and L."""
+    """Reproduction config with given K and L, not a recovered historical config."""
     return Config(
         data=DataConfig(batch_size=batch_size),
         model=ModelConfig(
@@ -43,10 +38,9 @@ def _paper_config(codebook_size: int, num_quantize_layers: int, batch_size: int 
     )
 
 
-# Best (K, L) per dataset — these need to be determined by grid search.
-# Initial values below are reasonable starting points.
+# Starting values: (K, L, batch_size), not recovered paper settings.
 DATASET_PRESETS = {
-    'ArticularyWordRecognition': (64, 3, 32),   # (K, L, batch_size)
+    'ArticularyWordRecognition': (64, 3, 32),
     'FingerMovements':           (64, 3, 32),
     'SpokenArabicDigits':        (128, 3, 64),
     'CharacterTrajectories':     (64, 3, 32),
@@ -62,14 +56,11 @@ PRESETS = {
     'debug': get_fast_debug_config,
 }
 
-# Register per-dataset presets
 for _ds, (_k, _l, _bs) in DATASET_PRESETS.items():
-    # Use lowercase dataset name as preset key
     PRESETS[_ds.lower()] = lambda k=_k, l=_l, bs=_bs: _paper_config(k, l, bs)
 
 
 def get_preset(name: str) -> Config:
-    # Try exact match first, then lowercase
     key = name if name in PRESETS else name.lower()
     if key not in PRESETS:
         available = ', '.join(sorted(PRESETS.keys()))

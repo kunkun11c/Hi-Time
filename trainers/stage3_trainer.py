@@ -1,161 +1,156 @@
+from contextlib import contextmanager
+import inspect
+import random
+
+import numpy as np
 import torch
-import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data._utils.collate import default_collate
+from torch.nn import functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import DataLoader
-from typing import Dict
-
 from .base_trainer import BaseTrainer
-from configs import Config
-from models.encoder import Stage1Encoder
-from models.discretizer import Stage2Discretizer
 from models.predictor import Stage3GPT2Predictor
+from utils.data.datasets import TimeSeriesDataset
 
 
-def mixup_code_embeds(code_embeds, codes, labels, alpha=0.4):
-    """Apply mixup in code embedding space.
-    
-    Returns mixed code_embeds, mixed codes (as soft targets), labels_a, labels_b, lam.
+@contextmanager
+def _preserve_random_states():
+    """Preserve model, shuffle, and worker RNG streams during target caching."""
+    cpu_state = torch.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None
+    python_state, numpy_state = random.getstate(), np.random.get_state()
+    try:
+        yield
+    finally:
+        torch.set_rng_state(cpu_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+
+
+def cache_training_codes(train_loader, encoder, discretizer, device):
+    """Cache frozen targets for untransformed built-in tensor datasets.
+
+    Keep the original sampler/generator and RNG states. Custom transforms or
+    collation retain online target computation.
     """
-    if alpha <= 0:
-        return code_embeds, codes, labels, labels, 1.0
-    lam = torch.distributions.Beta(alpha, alpha).sample().item()
-    B = code_embeds[0].size(0)
-    index = torch.randperm(B, device=code_embeds[0].device)
-    
-    mixed_embeds = [lam * ce + (1 - lam) * ce[index] for ce in code_embeds]
-    # Codes can't be truly mixed (they're discrete), pass originals for code prediction loss
-    return mixed_embeds, codes, labels, labels[index], lam
+    dataset = train_loader.dataset
+    if train_loader.collate_fn is not default_collate:
+        return train_loader
+    if type(dataset) is TimeSeriesDataset and dataset.transform is None:
+        inputs, labels = dataset.data, dataset.labels
+    elif type(dataset) is TensorDataset and len(dataset.tensors) == 2:
+        inputs, labels = dataset.tensors
+    else:
+        return train_loader
+    if not len(inputs):
+        return train_loader
+    batch_size = (train_loader.batch_size
+                  or getattr(train_loader.batch_sampler, 'batch_size', None)
+                  or 32)
+    modes = {module: module.training
+             for root in (encoder, discretizer) for module in root.modules()}
+    chunks = []
+    try:
+        with _preserve_random_states(), torch.no_grad():
+            encoder.eval()
+            discretizer.eval()
+            for start in range(0, len(inputs), batch_size):
+                x = inputs[start:start + batch_size].to(device)
+                codes = discretizer(encoder.encode(x))['codes']
+                if not chunks:
+                    chunks = [[] for _ in codes]
+                if len(codes) != len(chunks):
+                    raise ValueError('Expert returned an inconsistent number of code levels')
+                for level, target in enumerate(codes):
+                    chunks[level].append(target.detach().cpu())
+    finally:
+        # Restore each expert submodule's original training mode.
+        for module, training in modes.items():
+            module.training = training
+    cached = TensorDataset(inputs, labels, *(torch.cat(parts) for parts in chunks))
+    # Reuse the sampler/generator to preserve indices and worker seeds.
+    # Filter optional DataLoader arguments for older PyTorch versions.
+    options = {'batch_sampler': train_loader.batch_sampler,
+               'num_workers': train_loader.num_workers,
+               'collate_fn': train_loader.collate_fn,
+               'pin_memory': train_loader.pin_memory,
+               'timeout': train_loader.timeout,
+               'worker_init_fn': train_loader.worker_init_fn,
+               'multiprocessing_context': train_loader.multiprocessing_context,
+               'generator': train_loader.generator,
+               'persistent_workers': train_loader.persistent_workers}
+    if train_loader.num_workers:
+        options['prefetch_factor'] = train_loader.prefetch_factor
+    for name in ('pin_memory_device', 'in_order'):
+        if hasattr(train_loader, name) and name in inspect.signature(DataLoader).parameters:
+            options[name] = getattr(train_loader, name)
+    return DataLoader(cached, **options)
 
 
 class Stage3Trainer(BaseTrainer):
-    def __init__(self, config: Config, encoder: Stage1Encoder, discretizer: Stage2Discretizer,
-                 device: torch.device):
+    def __init__(self, config, encoder, discretizer, device):
         super().__init__(config, device, patience=config.training.stage3_patience)
-        self.encoder = encoder.eval()
-        self.discretizer = discretizer.eval()
-        
-        # Mixup config for Stage 3
-        self.stage3_mixup_alpha = getattr(config.training, 'stage3_mixup_alpha', 0.0)
-        
-        # Create GPT-2 predictor with pretrained weights option
+        self.encoder, self.discretizer = encoder.eval(), discretizer.eval()
+        if config.training.stage3_mixup_alpha:
+            raise ValueError('Legacy code-embedding mixup is not part of the paper architecture.')
         self.model = Stage3GPT2Predictor(
-            d_model=config.model.d_model,
-            codebook_size=config.model.codebook_size,
-            num_rq_layers=config.model.num_quantize_layers,
-            num_classes=config.data.num_classes,
-            n_heads=config.model.n_heads,
-            n_layers=config.model.n_layers,
-            dropout=getattr(config.model, 'stage3_dropout', config.model.dropout),
-            use_pretrained=config.model.use_pretrained_gpt2,
-            pretrained_model=config.model.gpt2_model,
-            freeze_gpt2=config.model.freeze_gpt2,
-            unfreeze_layers=config.model.unfreeze_layers,
-            bypass_gpt2_cls=getattr(config.model, 'bypass_gpt2_cls', False)
-        ).to(device)
-        
-        # Print model parameter info
-        param_info = self.model.get_num_parameters()
-        print(f"\n[Stage 3] GPT-2 Predictor initialized:")
-        print(f"  - Use pretrained: {config.model.use_pretrained_gpt2}")
-        print(f"  - Pretrained model: {config.model.gpt2_model}")
-        print(f"  - Total parameters: {param_info['total']:,}")
-        print(f"  - GPT-2 parameters: {param_info['gpt2']:,}")
-        print(f"  - Other parameters: {param_info['other']:,}")
-        
+            d_model=config.model.d_model, codebook_size=config.model.codebook_size,
+            num_rq_layers=config.model.num_quantize_layers, num_classes=config.data.num_classes,
+            n_heads=config.model.n_heads, n_layers=config.model.n_layers,
+            dropout=config.model.stage3_dropout, use_pretrained=config.model.use_pretrained_gpt2,
+            pretrained_model=config.model.gpt2_model, freeze_gpt2=config.model.freeze_gpt2,
+            unfreeze_layers=config.model.unfreeze_layers, n_vars=config.data.n_vars,
+            bypass_gpt2_cls=config.model.bypass_gpt2_cls).to(device)
+        print('[Stage 3] Paper hierarchical predictor:', self.model.get_num_parameters())
         self.cls_weight = config.training.loss_weight_label
-        self.code_weights = [
-            config.training.loss_weight_code1,
-            config.training.loss_weight_code2,
-            config.training.loss_weight_code3,
-        ][:config.model.num_quantize_layers]
-        
-        # Only optimize trainable parameters (frozen GPT-2 layers excluded)
-        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
-        self.optimizer = torch.optim.AdamW(
-            trainable_params,
-            lr=config.training.stage3_lr,
-            weight_decay=config.training.stage3_weight_decay
-        )
-        self.scheduler = None
-        stage3_use_sched = getattr(config.training, 'stage3_use_scheduler', config.training.use_scheduler)
-        if stage3_use_sched:
-            self.scheduler = CosineAnnealingLR(
-                self.optimizer,
-                T_max=config.training.stage3_epochs,
-                eta_min=config.training.scheduler_eta_min
-            )
-    
-    def _get_codes_and_embeds(self, x: torch.Tensor):
-        with torch.no_grad():
-            repr = self.encoder.encode(x)
-            disc_out = self.discretizer(repr)
-        return disc_out['codes'], disc_out['code_embeds']
-    
-    def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
+        configured = [config.training.loss_weight_code1, config.training.loss_weight_code2,
+                      config.training.loss_weight_code3]
+        self.code_weights = [configured[min(i, 2)] for i in range(config.model.num_quantize_layers)]
+        self.optimizer = torch.optim.AdamW([p for p in self.model.parameters() if p.requires_grad],
+            lr=config.training.stage3_lr, weight_decay=config.training.stage3_weight_decay)
+        if config.training.stage3_use_scheduler:
+            self.scheduler = CosineAnnealingLR(self.optimizer, config.training.stage3_epochs,
+                eta_min=config.training.scheduler_eta_min)
+
+    def train_epoch(self, train_loader):
         self.model.train()
-        total_loss, total_correct, total_samples = 0.0, 0, 0
-        
-        for x, y in train_loader:
-            x, y = x.to(self.device), y.to(self.device)
-            codes, code_embeds = self._get_codes_and_embeds(x)
-            
-            # Apply mixup in code embedding space if enabled
-            if self.stage3_mixup_alpha > 0:
-                code_embeds, codes, y_a, y_b, lam = mixup_code_embeds(
-                    code_embeds, codes, y, self.stage3_mixup_alpha)
+        total_loss = total_correct = total_samples = 0
+        for batch in train_loader:
+            x, y = batch[0].to(self.device), batch[1].to(self.device)
+            if len(batch) > 2:
+                codes = [target.to(self.device) for target in batch[2:]]
             else:
-                y_a, y_b, lam = y, y, 1.0
-            
-            self.optimizer.zero_grad()
-            outputs = self.model(code_embeds, y_a)
-            
-            if lam < 1.0:
-                # Mixup loss: weighted combination of losses for both label sets
-                loss_a, _ = self.model.get_loss(outputs, codes, y_a,
-                                                cls_weight=self.cls_weight,
-                                                code_weights=self.code_weights)
-                loss_b, _ = self.model.get_loss(outputs, codes, y_b,
-                                                cls_weight=self.cls_weight,
-                                                code_weights=self.code_weights)
-                loss = lam * loss_a + (1 - lam) * loss_b
-            else:
-                loss, _ = self.model.get_loss(outputs, codes, y,
-                                              cls_weight=self.cls_weight,
-                                              code_weights=self.code_weights)
-            
+                with torch.no_grad():
+                    codes = self.discretizer(self.encoder.encode(x))['codes']
+            self.optimizer.zero_grad(set_to_none=True)
+            outputs = self.model(x)
+            loss, _ = self.model.get_loss(outputs, codes, y, self.cls_weight, self.code_weights)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.grad_clip)
             self.optimizer.step()
-            
-            total_loss += loss.item() * x.size(0)
-            total_correct += (outputs['cls_logits'].argmax(dim=-1) == y_a).sum().item()
-            total_samples += x.size(0)
-        
+            total_loss += loss.item() * len(y)
+            total_correct += (outputs['cls_logits'].argmax(-1) == y).sum().item()
+            total_samples += len(y)
         return {'loss': total_loss / total_samples, 'accuracy': total_correct / total_samples}
-    
+
     @torch.no_grad()
-    def validate(self, val_loader: DataLoader) -> Dict[str, float]:
+    def validate(self, val_loader):
         self.model.eval()
-        total_loss, total_correct, total_samples = 0.0, 0, 0
-        
+        total_loss = total_correct = total_samples = 0
         for x, y in val_loader:
             x, y = x.to(self.device), y.to(self.device)
-            codes, code_embeds = self._get_codes_and_embeds(x)
-            # No labels during validation — cls branch uses learnable CLS token
-            outputs = self.model(code_embeds, labels=None)
-            cls_loss = F.cross_entropy(outputs['cls_logits'], y)
-            
-            total_loss += cls_loss.item() * x.size(0)
-            total_correct += (outputs['cls_logits'].argmax(dim=-1) == y).sum().item()
-            total_samples += x.size(0)
-        
+            logits = self.model(x)['cls_logits']
+            total_loss += F.cross_entropy(logits, y).item() * len(y)
+            total_correct += (logits.argmax(-1) == y).sum().item()
+            total_samples += len(y)
         return {'loss': total_loss / total_samples, 'accuracy': total_correct / total_samples}
 
 
-def train_stage3(config: Config, encoder: Stage1Encoder, discretizer: Stage2Discretizer,
-                 train_loader: DataLoader, val_loader: DataLoader = None,
-                 device: torch.device = None) -> Stage3Trainer:
+def train_stage3(config, encoder, discretizer, train_loader, val_loader=None, device=None):
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    train_loader = cache_training_codes(train_loader, encoder, discretizer, device)
     trainer = Stage3Trainer(config, encoder, discretizer, device)
     trainer.train(train_loader, val_loader, config.training.stage3_epochs)
     return trainer

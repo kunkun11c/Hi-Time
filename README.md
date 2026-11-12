@@ -1,110 +1,59 @@
-# [ICML 2026] Hi-Time: Coarse-to-Fine Hierarchical Latent Prediction for Multivariate Time Series Classification
+# Hi-Time: Hierarchical Latent Prediction for Multivariate Time Series Classification
 
-## Overview
+Hi-Time learns temporal representations, quantizes them into coarse-to-fine semantic codes, and trains GPT-2 to predict those codes before classifying a time series. This version corrects the input and prediction paths in the earlier release. See [implementation details](docs/implementation.md).
 
-This repository contains the implementation code for *Hi-Time: Coarse-to-Fine Hierarchical Latent Prediction for Multivariate Time Series Classification*.
+![Hi-Time architecture](model.png)
 
-Integrating Large Language Models (LLMs) into time series tasks has yielded impressive performance. While some works aim to enhance accuracy by explicitly designing step-by-step reasoning into prompts, such explicit Chain-of-Thought (CoT) approaches are difficult to generalize to time series. This is because it is difficult to clearly define the reasoning trajectories of time series. In addition, the high heterogeneity across time series often requires specialized prompt designs, limiting the model's scalability. To address these challenges, we propose **Hi-Time**, a coarse-to-fine **hi**erarchical latent prediction framework based on temporal semantic codes for multivariate **time** series classification. This framework automatically constructs scenario-specific latent supervision trajectories based on the characteristics of time series, thereby providing structured supervision for the LLM. Specifically, Hi-Time first performs temporal representation pre-training with a multi-view temporal representation fusion to acquire high-quality temporal embeddings. We then discretize these temporal embeddings into hierarchical temporal semantic codes as the latent supervision trajectory. Finally, the LLM predicts temporal semantic codes in a stepwise manner and then infers the final labels, thereby establishing a coarse-to-fine decision process. Experiments on ten public multivariate time series datasets demonstrate that Hi-Time effectively adapts to diverse datasets and outperforms state-of-the-art methods.
+## Installation
 
-## The Model Framework of Hi-Time
-
-![model](model.png)
-
-## Datasets
-
-We follow the benchmark on [TS-GAC](https://github.com/Frank-Wang-oss/TS-GAC) and use 10 datasets: UCI-HAR, ISRUC-S3, and 8 UEA datasets including ArticularyWordRecognition (AWR), FingerMovements (FM), SpokenArabicDigits (SAD), CharacterTrajectories (CT), FaceDetection (FD), InsectWingbeat (IW), MotorImagery (MI), and SelfRegulationSCP1 (SRSCP1).
-
-### UCI-HAR
-
-You can access [here](https://archive.ics.uci.edu/ml/datasets/Human+Activity+Recognition+Using+Smartphones).
-
-### ISRUC-S3
-
-You can access [here](https://sleeptight.isr.uc.pt/), and download S3.
-
-### UEA Datasets
-
-You can access [here](http://timeseriesclassification.com/dataset.php).
-
-This repository includes the FingerMovements dataset as a demo example. To use other datasets, download the corresponding `.npy` files and place them under `data/datasets/<DatasetName>/`:
-
-```
-data/datasets/<DatasetName>/
-├── X_train.npy
-├── y_train.npy
-├── X_test.npy
-└── y_test.npy
-```
-
-## Requirements
-
-Hi-Time has been tested using Python 3.9.
-
-To have consistent libraries and their versions, you can install needed dependencies running the following command:
+Use Python 3.9 and PyTorch 2.0.0 with CUDA 11.8. The setup script requires [uv](https://docs.astral.sh/uv/) and creates `.venv-torch20` without replacing the system Python.
 
 ```bash
-pip install -r requirements.txt
+bash scripts/setup_paper_env.sh
+bash scripts/python_paper.sh -m unittest discover -s tests
 ```
 
-### Pretrained GPT-2 Weights
+Dependencies are pinned in [requirements-paper-lock.txt](requirements-paper-lock.txt). `scripts/python_paper.sh` runs the environment's Python and selects its PyTorch shared libraries. Set `HITIME_PAPER_ENV` if the environment is stored elsewhere.
 
-Stage 3 requires pretrained GPT-2 weights. Download and place them under `pretrained/gpt2/`:
+Download the pretrained [GPT-2 small weights](https://huggingface.co/openai-community/gpt2) separately:
 
-```
+```text
 pretrained/gpt2/
 ├── config.json
 └── model.safetensors
 ```
 
-You can obtain GPT-2 weights from [HuggingFace](https://huggingface.co/openai-community/gpt2). To skip pretrained weights and train from scratch, use the `--no-pretrained` flag.
+## FingerMovements
 
-## Running the Code
+The repository includes the [UEA FingerMovements dataset](https://www.timeseriesclassification.com/dataset.php). The recorded configuration is [configs/fingermovements.json](configs/fingermovements.json): K=64, L=3, λ=20, pretrained GPT-2, and GPT-2 learning rate 1e-5.
 
-To quickly verify the installation, run:
-
-```bash
-python train.py --dataset FingerMovements --preset debug
-```
-
-### Training
-
-Run the full three-stage pipeline:
+Run one seed:
 
 ```bash
-python train.py --dataset FingerMovements
+CUDA_VISIBLE_DEVICES=0 bash scripts/python_paper.sh experiments/run_finger.py \
+  --config configs/fingermovements.json --seed 957 \
+  --output experiments/results/fm_seed957 --paper-protocol
 ```
 
-### Training without Pretrained GPT-2
+Run the five recorded seeds in parallel, one job per GPU:
 
 ```bash
-python train.py --dataset FingerMovements --no-pretrained
+HITIME_GPUS="0 1 2 3 4" bash scripts/reproduce_selected.sh \
+  experiments/results/fm_five_seeds
 ```
 
-### Available Arguments
+Use `HITIME_GPUS="0"` to queue them on one GPU. Completed runs are retained when restarting the same command. The script saves checkpoints, data splits, normalization statistics, training histories, predictions, and environment records.
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--dataset` | *(required)* | Dataset name (e.g. `FingerMovements`) |
-| `--preset` | `default` | Config preset (`default`, `debug`, or a dataset name) |
-| `--seed` | from config (10) | Random seed |
-| `--device` | auto | Device (`cuda` / `cpu`) |
-| `--batch-size` | from config | Training batch size |
-| `--no-pretrained` | `false` | Train GPT-2 from scratch |
-| `--gpt2-model` | `./pretrained/gpt2` | Path to pretrained GPT-2 weights |
-| `--no-resplit` | `false` | Disable 60/20/20 merge-resplit |
-| `--codebook-size` | from config (64) | Codebook size *K* for residual quantization |
-| `--num-quantize-layers` | from config (3) | Number of quantization layers *L* |
+Replay a saved predictor using raw test sequences:
 
-Key hyperparameters can be adjusted in `configs/base_config.py`:
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/python_paper.sh experiments/evaluate_checkpoint.py \
+  --run-dir experiments/results/fm_seed957
+```
 
-- *batch_size*: Training batch size
-- *patch_len*: Patch length, corresponding to *P* in the paper
-- *stride*: Stride of patch
-- *d_model*: Model hidden dimension
-- *n_heads*: Number of heads in multi-head attention
-- *n_layers*: Number of transformer layers
-- *codebook_size*: Codebook size *K* for residual quantization
-- *num_quantize_layers*: Number of quantization layers *L*
-- *scales*: Multi-scale patch scales (default: [1, 2, 4])
+The five recorded seeds average **64.0476%**. Both the configuration and seeds were selected using test accuracy; this is an exploratory result. Across all 27 tested seeds for that configuration, the mean is **55.0705%**. The [experiment record](docs/fingermovements.md) includes individual scores, the search scope, and replay checks. The original paper's exact historical configuration is unavailable.
 
+## References
 
+- [Original Hi-Time repository](https://github.com/qianlima-lab/Hi-Time)
+- [TS-GAC benchmark](https://github.com/Frank-Wang-oss/TS-GAC)

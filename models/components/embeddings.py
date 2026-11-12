@@ -15,7 +15,7 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
-    
+
     def forward(self, seq_len: int, device: torch.device = None) -> torch.Tensor:
         if device is not None and self.pe.device != device:
             return self.pe[:seq_len].to(device)
@@ -30,7 +30,7 @@ class PatchEmbedding(nn.Module):
         self.proj = nn.Linear(patch_len, d_model)
         self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, V, T = x.shape
         num_patches = (T - self.patch_len) // self.stride + 1
@@ -41,7 +41,7 @@ class PatchEmbedding(nn.Module):
         patches = torch.stack(patches, dim=2)
         patches = self.dropout(self.norm(self.proj(patches)))
         return patches
-    
+
     def get_num_patches(self, seq_len: int) -> int:
         return (seq_len - self.patch_len) // self.stride + 1
 
@@ -56,7 +56,7 @@ class TimeSeriesPatchEmbedding(nn.Module):
         self.proj = nn.Linear(n_vars * patch_len, gpt2_hidden)
         self.norm = nn.LayerNorm(gpt2_hidden)
         self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches, gpt2_hidden) * 0.02)
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, V, T = x.shape
         patches = []

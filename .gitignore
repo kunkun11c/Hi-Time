@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv*/
+.python39/
+pretrained/gpt2/*.safetensors
+pretrained/gpt2/*.bin
+checkpoints/
+experiments/results/

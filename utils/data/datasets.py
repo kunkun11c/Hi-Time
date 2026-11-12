@@ -9,10 +9,10 @@ class TimeSeriesDataset(Dataset):
         self.data = torch.FloatTensor(data)
         self.labels = torch.LongTensor(labels)
         self.transform = transform
-    
+
     def __len__(self) -> int:
         return len(self.labels)
-    
+
     def __getitem__(self, idx: int):
         x = self.data[idx]
         if self.transform:
