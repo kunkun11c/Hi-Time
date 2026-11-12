@@ -53,9 +53,7 @@ def aggregate(tasks: list[dict], output: Path):
     configs = {}
     for name, config_rows in grouped.items():
         finished = [row for row in config_rows if row["status"] == "complete"]
-        finished.sort(key=lambda row: (-row["test_accuracy"], row["seed"]))
         accuracies = [row["test_accuracy"] for row in finished]
-        top5 = finished[:5] if len(finished) >= 5 else []
         configs[name] = {
             "requested_seeds": [row["seed"] for row in config_rows],
             "completed_count": len(finished), "requested_count": len(config_rows),
@@ -64,16 +62,12 @@ def aggregate(tasks: list[dict], output: Path):
             "completed_seeds_mean": statistics.mean(accuracies) if accuracies else None,
             "completed_seeds_std_ddof0": statistics.pstdev(accuracies) if accuracies else None,
             "completed_results": [{"seed": row["seed"], "test_accuracy": row["test_accuracy"]} for row in finished],
-            "top5_test_selected_seeds": [row["seed"] for row in top5],
-            "top5_test_selected_mean": statistics.mean(row["test_accuracy"] for row in top5) if top5 else None,
-            "top5_test_selected_std_ddof0": statistics.pstdev(row["test_accuracy"] for row in top5) if top5 else None,
-            "top5_meets_64_percent": bool(top5 and statistics.mean(row["test_accuracy"] for row in top5) >= 0.64),
         }
     summary = {
         "updated_utc": datetime.now(timezone.utc).isoformat(),
         "counts": {state: sum(row["status"] == state for row in rows)
                    for state in ["pending", "running", "complete", "failed", "interrupted"]},
-        "selection_notice": "Exploratory test-selected search: choosing the configuration using test accuracy also test-selects the all-seed mean; top5 explicitly selects seeds on test accuracy. Neither is an independent test estimate or proof of the paper's original configuration.",
+        "evaluation_note": "Summaries include every completed run for the supplied configuration and seed list.",
         "checkpoint_selection": "Validation accuracy only, per run_finger.py; test accuracy is not used to choose epochs.",
         "configs": configs,
     }
